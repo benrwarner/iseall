@@ -89,6 +89,8 @@ const IC = {
   rocket: '<path d="M4.5 16.5c-1.5 1.3-2 5-2 5s3.7-.5 5-2c.7-.8.7-2.1-.1-2.9a2.2 2.2 0 0 0-2.9-.1z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.9A12.9 12.9 0 0 1 22 2c0 2.7-.8 7.5-6 11a22.4 22.4 0 0 1-4 2z"/><path d="M9 12H4s.6-3 2-4c1.6-1.1 5 0 5 0M12 15v5s3-.6 4-2c1.1-1.6 0-5 0-5"/>',
   activity: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
   link: '<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>',
+  trend: '<path d="M3 3v18h18"/><path d="m7 14 4-4 3 3 6-7"/>',
+  chev: '<path d="m11 17-5-5 5-5M18 17l-5-5 5-5"/>',
   pkg: '<path d="m7.5 4.3 9 5.2M21 8v8l-9 5-9-5V8l9-5z"/><path d="M3.3 7 12 12l8.7-5M12 22V12"/>',
 };
 const ic = (n, cls = '') => `<svg class="i ${cls}" viewBox="0 0 24 24">${IC[n] || ''}</svg>`;
@@ -277,7 +279,7 @@ function niceMax(v) {
 const charts = new Set();
 class LineChart {
   constructor(el, opts) {
-    this.o = Object.assign({ max: 100, window: 300e3, fmt: v => v.toFixed(1) + '%', fmtAxis: v => Math.round(v) + '%', axis: true }, opts);
+    this.o = Object.assign({ max: 100, window: 300e3, gap: 15000, fmtT: clock, fmt: v => v.toFixed(1) + '%', fmtAxis: v => Math.round(v) + '%', axis: true }, opts);
     this.el = el;
     el.classList.add('chart');
     el.innerHTML = '<canvas></canvas><div class="tip"></div>';
@@ -312,7 +314,7 @@ class LineChart {
     let best = 0, bd = Infinity;
     for (let i = 0; i < this.t.length; i++) { const d = Math.abs(this.t[i] - tAt); if (d < bd) { bd = d; best = i; } }
     this.hover = best;
-    this.tip.innerHTML = `<div class="mute" style="margin-bottom:3px">${clock(this.t[best])}</div>` +
+    this.tip.innerHTML = `<div class="mute" style="margin-bottom:3px">${this.o.fmtT(this.t[best])}</div>` +
       this.o.series.map((se, k) => `<div><i style="background:${COL[se.c] || se.c}"></i>${esc(se.label)} <b>${(se.fmt || this.o.fmt)((this.ys[k] || [])[best] ?? 0)}</b></div>`).join('');
     this.tip.classList.add('on');
     const px = (this.t[best] - g.tStart) / this.o.window * g.W;
@@ -348,7 +350,7 @@ class LineChart {
     }
     c.setLineDash([]);
     if (this.o.axis) {
-      c.textAlign = 'left'; c.fillText(`-${Math.round(win / 60e3)}m`, 4, H - 4);
+      c.textAlign = 'left'; c.fillText('-' + winLabel(win), 4, H - 4);
       c.textAlign = 'right'; c.fillText('now', W - 4, H - 4);
     }
     if (!this.t.length) return;
@@ -359,14 +361,14 @@ class LineChart {
       let seg = [];
       for (let i = 0; i < this.t.length; i++) {
         if (this.t[i] < tStart - 5000) continue;
-        if (seg.length && this.t[i] - this.t[i - 1] > 15000) { segs.push(seg); seg = []; } // gap: idle sampling or outage
+        if (seg.length && this.t[i] - this.t[i - 1] > this.o.gap) { segs.push(seg); seg = []; } // gap: machine off or outage
         seg.push([X(this.t[i]), Y(ys[i] || 0)]);
       }
       if (seg.length) segs.push(seg);
       for (const s of segs) {
-        if (s.length > 1) {
+        if (se.fill !== false && s.length > 1) {
           const gr = c.createLinearGradient(0, padT, 0, padT + ch);
-          gr.addColorStop(0, rgba(col, .26)); gr.addColorStop(1, rgba(col, 0));
+          gr.addColorStop(0, rgba(col, se.alpha ?? .26)); gr.addColorStop(1, rgba(col, 0));
           c.beginPath(); c.moveTo(s[0][0], padT + ch);
           for (const [x, y] of s) c.lineTo(x, y);
           c.lineTo(s[s.length - 1][0], padT + ch); c.closePath();
@@ -374,11 +376,13 @@ class LineChart {
         }
         c.beginPath();
         s.forEach(([x, y], i) => i ? c.lineTo(x, y) : c.moveTo(x, y));
-        c.strokeStyle = col; c.lineWidth = 1.7; c.lineJoin = 'round';
+        c.strokeStyle = col; c.lineWidth = se.w || 1.7; c.lineJoin = 'round';
+        c.globalAlpha = se.lineAlpha ?? 1;
         c.stroke();
+        c.globalAlpha = 1;
       }
       const last = segs.length && segs[segs.length - 1];
-      if (last && last.length) { // glowing live head
+      if (last && last.length && se.dot !== false) { // glowing live head
         const [x, y] = last[last.length - 1];
         c.beginPath(); c.arc(x - 2, y, 6.5, 0, 7); c.fillStyle = rgba(col, .18); c.fill();
         c.beginPath(); c.arc(x - 2, y, 3, 0, 7); c.fillStyle = col; c.fill();
@@ -394,6 +398,21 @@ class LineChart {
     }
   }
 }
+
+const winLabel = ms => ms >= 864e5 ? Math.round(ms / 864e5) + 'd' : ms >= 36e5 ? Math.round(ms / 36e5) + 'h' : Math.round(ms / 6e4) + 'm';
+const dayTime = ms => new Date(ms).toLocaleString([], { weekday: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+// time-based moving average (handles gaps): mean of every point within `win` ms before each point
+function rolling(t, v, win) {
+  const out = new Array(v.length);
+  let j = 0, sum = 0;
+  for (let i = 0; i < v.length; i++) {
+    sum += v[i];
+    while (t[i] - t[j] >= win) sum -= v[j++];
+    out[i] = sum / (i - j + 1);
+  }
+  return out;
+}
+const T_COL = { t: 0, cpu: 1, cpuMax: 2, mem: 3, memMax: 4, temp: 5, tempMax: 6, load: 7, rx: 8, tx: 9, dr: 10, dw: 11 };
 
 function spark(cv, vals, colVar = '--acc', max = 0) {
   if (!cv) return;
@@ -523,6 +542,7 @@ function setConn(on) {
 
 const PAGES = [
   { id: 'overview', t: 'Overview', i: 'grid', sec: 'Monitor', k: 'o' },
+  { id: 'trends', t: 'Trends', i: 'trend', k: 'a' },
   { id: 'processes', t: 'Processes', i: 'cpu', k: 'p' },
   { id: 'network', t: 'Network', i: 'wifi', k: 'n' },
   { id: 'storage', t: 'Storage', i: 'disk', k: 'f' },
@@ -548,10 +568,10 @@ function renderShell() {
   let navHTML = '';
   for (const p of PAGES) {
     if (p.sec) navHTML += `<div class="nav-sec">${p.sec}</div>`;
-    navHTML += `<a href="#/${p.id}" data-p="${p.id}">${ic(p.i)}<span>${p.t}</span>${p.cnt ? `<span class="cnt" id="${p.cnt}"></span>` : ''}</a>`;
+    navHTML += `<a href="#/${p.id}" data-p="${p.id}" data-t="${p.t}">${ic(p.i)}<span>${p.t}</span>${p.cnt ? `<span class="cnt" id="${p.cnt}"></span>` : ''}</a>`;
   }
   $('#root').innerHTML = `
-  <div class="app">
+  <div class="app${store.get('collapsed', false) ? ' collapsed' : ''}">
     <aside class="side" id="side">
       <div class="brand">${eyeSVG('eye')}<div><b>iseall</b><small id="b-host">connecting…</small></div></div>
       <nav class="nav">${navHTML}</nav>
@@ -559,6 +579,7 @@ function renderShell() {
         <div class="mini-stat"><span>CPU</span><div class="bar thin" id="m-cpu"><i></i></div><span>—</span></div>
         <div class="mini-stat"><span>MEM</span><div class="bar thin" id="m-mem"><i></i></div><span>—</span></div>
         <div class="mini-stat"><span>TEMP</span><div class="bar thin" id="m-tmp"><i></i></div><span>—</span></div>
+        <button class="side-toggle" id="side-toggle" title="Collapse sidebar  [">${ic('chev')}<span>Collapse</span></button>
       </div>
     </aside>
     <main class="main">
@@ -578,8 +599,36 @@ function renderShell() {
   $('#bell').onclick = e => { e.stopPropagation(); toggleBell(); };
   $('#burger').onclick = e => { e.stopPropagation(); $('#side').classList.toggle('open'); };
   $('#side').addEventListener('click', e => { if (e.target.closest('a')) $('#side').classList.remove('open'); });
+  $('#side-toggle').onclick = toggleSide;
+  // labels for the icon rail
+  const nav = $('#side .nav');
+  nav.addEventListener('mouseover', e => {
+    const a = e.target.closest('a[data-t]');
+    if (!a || !$('.app.collapsed') || innerWidth <= 960) return hideSideTip();
+    const r = a.getBoundingClientRect();
+    let tip = $('#side-tip');
+    if (!tip) { tip = document.createElement('div'); tip.id = 'side-tip'; tip.className = 'side-tip'; document.body.appendChild(tip); }
+    const cnt = a.querySelector('.cnt');
+    tip.textContent = a.dataset.t + (cnt && cnt.textContent ? ` · ${cnt.textContent}` : '');
+    tip.style.left = (r.right + 10) + 'px';
+    tip.style.top = (r.top + r.height / 2) + 'px';
+  });
+  nav.addEventListener('mouseleave', hideSideTip);
   updateThemeIcon();
   setConn(false);
+}
+
+function hideSideTip() { const t = $('#side-tip'); if (t) t.remove(); }
+function toggleSide() {
+  const app = $('.app');
+  if (!app) return;
+  const on = app.classList.toggle('collapsed');
+  store.set('collapsed', on);
+  hideSideTip();
+  const b = $('#side-toggle');
+  if (b) b.title = (on ? 'Expand' : 'Collapse') + ' sidebar  [';
+  // charts redraw via ResizeObserver; the terminal listens for window resize
+  setTimeout(() => dispatchEvent(new Event('resize')), 280);
 }
 
 function renderShellInfo() {
@@ -618,6 +667,7 @@ function route() {
   const { id, q } = parseHash();
   while (overlays.length) overlays[overlays.length - 1].close();
   closeMenu();
+  hideSideTip();
   if (page && page.unmount) page.unmount();
   stopPoll();
   charts.forEach(c => c.destroy());
@@ -677,7 +727,8 @@ P.overview = {
         <div class="row" style="margin-top:16px;gap:18px" id="o-load"></div></div>
       <div class="card"><div class="card-h"><h3>${ic('disk')} Disk I/O</h3><div class="r legend" id="l-io"></div></div><div id="c-io" class="chart sm"></div></div>
       <div class="card"><div class="card-h"><h3>${ic('disk')} Filesystems</h3><div class="r"><button class="btn sm ghost" data-go="storage">Details</button></div></div><div class="col" id="o-mounts"><div class="skel"></div><div class="skel"></div></div></div>
-    </div>`;
+    </div>
+    <div class="card flush mt"><div class="card-h"><h3>${ic('trend')} Rolling averages</h3><div class="r"><span class="mute" style="font-size:12px" id="o-avg-n"></span><button class="btn sm ghost" data-go="trends">Trends ${ic('ext')}</button></div></div><div id="o-avg"><div style="padding:0 18px 16px"><div class="skel"></div><div class="skel"></div></div></div></div>`;
     el.onclick = e => { const a = e.target.closest('[data-nav]'); if (a) return navigate(a.dataset.nav); const g = e.target.closest('[data-go]'); if (g) navigate(g.dataset.go); };
     const rateAxis = { max: 0, min: 1024, fmt: fmtRate, fmtAxis: v => fmtB(v) };
     this.cm = new LineChart($('#c-cm', el), { series: [{ c: '--acc', label: 'CPU' }, { c: '--acc-2', label: 'Memory' }] });
@@ -688,8 +739,18 @@ P.overview = {
     if (S.slow) this.slow(S.slow);
     this.upT = setInterval(() => this.tickUp(), 1000);
     this.apps();
+    this.avgs();
+    this.avgT = setInterval(() => this.avgs(), 60000);
   },
-  unmount() { clearInterval(this.upT); },
+  unmount() { clearInterval(this.upT); clearInterval(this.avgT); },
+  async avgs() {
+    const d = await api('/api/trends?summary=1').catch(() => null);
+    const el = $('#o-avg');
+    if (!d || !el || pageId !== 'overview') return;
+    el.innerHTML = avgTable(d, (S.info && S.info.cores) || 1);
+    const c = d['30d'].coverage;
+    $('#o-avg-n').textContent = c < .98 ? `history builds up over time · ${Math.round(c * 100)}% of 30 days recorded` : '';
+  },
   // quick-launch for every web UI discovered on this box
   async apps(retry = 2) {
     const p = (retry === 2 && S.cache.ports) || await api('/api/ports').catch(() => null);
@@ -802,6 +863,159 @@ P.overview = {
     $('#o-hb').innerHTML = al.length ? `<span class="badge ${al.some(a => a.level === 'crit') ? 'crit' : 'warn'}">${plural(al.length, 'issue')}</span>` : `<span class="badge ok">${ic('check')}All systems nominal</span>`;
     $('#o-alerts').innerHTML = al.slice(0, 4).map(a => `<div class="alert-li ${a.level}" data-nav="${esc(a.nav || 'overview')}">${ic(a.level === 'crit' ? 'alert' : 'info')}<span class="grow">${esc(a.msg)}</span>${ic('ext', 'dim')}</div>`).join('') +
       (al.length > 4 ? `<div class="mute" style="font-size:12px">+${al.length - 4} more under the bell</div>` : '');
+  },
+};
+
+// rolling-averages table: metrics × windows, with peak and a ▲/▼ vs the 24h baseline
+function avgTable(d, cores) {
+  const wins = ['1h', '24h', '7d', '30d'];
+  const metrics = [
+    ['CPU', 'cpu', v => v.toFixed(1) + '%', v => v, [60, 85]],
+    ['Memory', 'mem', v => v.toFixed(1) + '%', v => v, [80, 92]],
+    ['Temperature', 'temp', v => v.toFixed(1) + ' °C', v => v / 85 * 100, [70, 80]],
+    ['Load (1m)', 'load', v => v.toFixed(2), v => v / cores * 100, [cores * .8, cores]],
+  ];
+  const cell = (s, m, w) => {
+    if (!s || !s.coverage) return '<td class="dim">—</td>';
+    const st = s[m[1]];
+    const l = st.avg >= m[4][1] ? 'crit' : st.avg >= m[4][0] ? 'warn' : '';
+    let arrow = '';
+    if (w === '1h' && d['24h'].coverage && d['24h'][m[1]].avg > 0) {
+      const r = st.avg / d['24h'][m[1]].avg;
+      if (r > 1.25) arrow = ` <span class="warn-t" title="Higher than the 24h average">▲</span>`;
+      else if (r < .8) arrow = ` <span class="ok-t" title="Lower than the 24h average">▼</span>`;
+    }
+    return `<td><div class="num" style="font-weight:600">${m[2](st.avg)}${arrow}</div>${bar(m[3](st.avg), l, 'thin')}<div class="sub" style="margin-top:4px">peak ${m[2](st.peak)}</div></td>`;
+  };
+  return `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Average</th>${wins.map(w => `<th>Last ${w}${d[w].coverage && d[w].coverage < .95 ? ` <span class="dim" style="text-transform:none;letter-spacing:0">(${Math.round(d[w].coverage * 100)}%)</span>` : ''}</th>`).join('')}</tr></thead><tbody>
+    ${metrics.map(m => `<tr><td><b>${m[0]}</b></td>${wins.map(w => cell(d[w], m, w)).join('')}</tr>`).join('')}
+  </tbody></table></div>`;
+}
+
+const RANGES = { '1h': 5 * 6e4, '6h': 15 * 6e4, '24h': 36e5, '7d': 6 * 36e5, '30d': 864e5 }; // range → rolling window
+P.trends = {
+  every: 60000,
+  mount(el, q) {
+    this.el = el;
+    this.range = q.get('r') || store.get('trange', '24h');
+    if (!RANGES[this.range]) this.range = '24h';
+    el.innerHTML = `
+      <div class="toolbar">
+        <div class="btn-group" id="tr-r">${Object.keys(RANGES).map(k => `<button data-r="${k}">${k}</button>`).join('')}</div>
+        <span class="mute" id="tr-win" style="font-size:12.5px"></span>
+        <div class="r mute" id="tr-cov" style="font-size:12.5px"></div>
+      </div>
+      <div class="summary" id="tr-sum">${'<div class="card"><div class="skel"></div><div class="skel"></div></div>'.repeat(6)}</div>
+      <div class="grid g2">
+        <div class="card"><div class="card-h"><h3>${ic('info')} Insights</h3></div><div id="tr-ins" class="col" style="gap:8px"></div></div>
+        <div class="card"><div class="card-h"><h3>${ic('clock')} Busiest hours</h3><div class="r mute" style="font-size:12px">avg CPU by hour · last 7 days</div></div><div id="tr-hours"></div></div>
+      </div>
+      <div class="grid g2 mt">
+        ${[['cpu', 'CPU', 'cpu'], ['mem', 'Memory', 'activity'], ['temp', 'Temperature', 'zap'], ['load', 'Load average', 'activity'], ['net', 'Network', 'wifi'], ['io', 'Disk I/O', 'disk']]
+          .map(([id, t, i]) => `<div class="card"><div class="card-h"><h3>${ic(i)} ${t}</h3><div class="r legend" id="tl-${id}"></div></div><div id="tc-${id}"></div></div>`).join('')}
+      </div>`;
+    $('#tr-r', el).onclick = e => {
+      const b = e.target.closest('[data-r]'); if (!b) return;
+      this.range = b.dataset.r; store.set('trange', this.range);
+      this.poll().catch(() => { });
+    };
+    this.charts = {};
+  },
+  makeCharts(win, step) {
+    Object.values(this.charts).forEach(c => c.destroy());
+    const base = { window: win, gap: step * 3, fmtT: win > 864e5 ? dayTime : v => (win > 36e5 ? dayTime(v) : clock(v)) };
+    const avgPair = (c1, c2, extra = {}) => ({ ...base, ...extra, series: [
+      { c: c1, label: 'Average', alpha: .14, w: 1, lineAlpha: .5, dot: false },
+      { c: c2, label: 'Rolling avg', fill: false, w: 2.2 },
+    ] });
+    const rate = { max: 0, min: 1024, fmt: fmtRate, fmtAxis: v => fmtB(v) };
+    this.charts = {
+      cpu: new LineChart($('#tc-cpu'), avgPair('--acc', '--acc-2')),
+      mem: new LineChart($('#tc-mem'), avgPair('--acc-2', '--acc-3')),
+      temp: new LineChart($('#tc-temp'), avgPair('--warn', '--crit', { max: 0, min: 40, fmt: v => v.toFixed(1) + ' °C', fmtAxis: v => Math.round(v) + '°' })),
+      load: new LineChart($('#tc-load'), avgPair('--info', '--acc', { max: 0, min: 1, fmt: v => v.toFixed(2), fmtAxis: v => v.toFixed(1) })),
+      net: new LineChart($('#tc-net'), { ...base, ...rate, series: [{ c: '--acc', label: 'Down (rolling)', alpha: .18 }, { c: '--acc-3', label: 'Up (rolling)', alpha: .12 }] }),
+      io: new LineChart($('#tc-io'), { ...base, ...rate, series: [{ c: '--info', label: 'Read (rolling)', alpha: .18 }, { c: '--acc-3', label: 'Write (rolling)', alpha: .12 }] }),
+    };
+  },
+  async poll() {
+    const d = await api('/api/trends?range=' + this.range);
+    if (pageId !== 'trends') return;
+    this.render(d);
+  },
+  render(d) {
+    $$('#tr-r button').forEach(b => b.classList.toggle('on', b.dataset.r === this.range));
+    const rw = RANGES[this.range];
+    $('#tr-win').textContent = `Bold line = rolling ${winLabel(rw)} average · faint = raw ${winLabel(d.step)} averages`;
+    if (!this.charts.cpu || this.win !== d.window) { this.makeCharts(d.window, d.step); this.win = d.window; }
+    const R = d.rows, s = d.summary, cores = d.cores || 1;
+    const col = k => R.map(r => r[T_COL[k]]);
+    const t = col('t');
+    const roll = k => rolling(t, col(k), rw);
+    this.charts.cpu.set(t, [col('cpu'), roll('cpu')]);
+    this.charts.mem.set(t, [col('mem'), roll('mem')]);
+    this.charts.temp.set(t, [col('temp'), roll('temp')]);
+    this.charts.load.set(t, [col('load'), roll('load')]);
+    this.charts.net.set(t, [roll('rx'), roll('tx')]);
+    this.charts.io.set(t, [roll('dr'), roll('dw')]);
+    const lg = (id, items) => { $('#tl-' + id).innerHTML = items.map(([c, l, v]) => `<span><i style="background:${COL[c]}"></i>${l} <b>${v}</b></span>`).join(''); };
+    lg('cpu', [['--acc-2', 'avg', s.cpu.avg.toFixed(1) + '%'], ['--acc', 'peak', s.cpu.peak.toFixed(0) + '%']]);
+    lg('mem', [['--acc-3', 'avg', s.mem.avg.toFixed(1) + '%'], ['--acc-2', 'peak', s.mem.peak.toFixed(0) + '%']]);
+    lg('temp', [['--crit', 'avg', s.temp.avg.toFixed(1) + '°'], ['--warn', 'peak', s.temp.peak.toFixed(1) + '°']]);
+    lg('load', [['--acc', 'avg', s.load.avg.toFixed(2)], ['--info', 'peak', s.load.peak.toFixed(2)]]);
+    lg('net', [['--acc', '↓', fmtB(s.rx)], ['--acc-3', '↑', fmtB(s.tx)]]);
+    lg('io', [['--info', 'R', fmtB(s.dr)], ['--acc-3', 'W', fmtB(s.dw)]]);
+
+    $('#tr-cov').innerHTML = !R.length ? '' : s.coverage < .98
+      ? `${ic('info')} ${Math.round(s.coverage * 100)}% of this window recorded — averages fill in as iseall keeps running`
+      : `${ic('check', 'ok-t')} full ${this.range} of data`;
+    const card = (l, v, sub, cls = '') => `<div class="card"><div class="label">${l}</div><div class="big ${cls}">${v}</div><div class="label">${sub}</div></div>`;
+    $('#tr-sum').innerHTML = !R.length ? `<div class="card empty" style="grid-column:1/-1">${ic('trend')}<b>Collecting data…</b>The first averages appear after a minute.</div>` : [
+      card(`Avg CPU · ${this.range}`, s.cpu.avg.toFixed(1) + '%', `peak ${s.cpu.peak.toFixed(0)}%`, lvl(s.cpu.avg, 60, 85) && lvl(s.cpu.avg, 60, 85) + '-t'),
+      card('Avg memory', s.mem.avg.toFixed(1) + '%', `peak ${s.mem.peak.toFixed(0)}%`, lvl(s.mem.avg, 80, 92) && lvl(s.mem.avg, 80, 92) + '-t'),
+      card('Avg temperature', s.temp.avg ? s.temp.avg.toFixed(1) + '°C' : '—', s.temp.peak ? `peak ${s.temp.peak.toFixed(1)}°C` : 'no sensor', lvl(s.temp.avg, 70, 80) && lvl(s.temp.avg, 70, 80) + '-t'),
+      card('Avg load', s.load.avg.toFixed(2), `${(s.load.avg / cores * 100).toFixed(0)}% of ${cores} cores · peak ${s.load.peak.toFixed(2)}`),
+      card('Network transferred', `<span style="font-size:20px">↓ ${fmtB(s.rx)}</span>`, `↑ ${fmtB(s.tx)} uploaded`),
+      card('Disk traffic', `<span style="font-size:20px">R ${fmtB(s.dr)}</span>`, `W ${fmtB(s.dw)} written`),
+    ].join('');
+    this.renderHours(d.hours);
+    this.renderInsights(d, s, cores);
+  },
+  renderHours(hours) {
+    const known = hours.filter(v => v >= 0);
+    const el = $('#tr-hours');
+    if (!known.length) { el.innerHTML = '<div class="mute">Builds up after the first 15 minutes of data.</div>'; return; }
+    const max = Math.max(...known, 1);
+    const top = hours.indexOf(Math.max(...known));
+    el.innerHTML = `<div class="hours">${hours.map((v, h) => `<div class="${v < 0 ? 'none' : h === top ? 'top' : ''}" style="height:${v < 0 ? 2 : Math.max(3, v / max * 100)}%" title="${pad2(h)}:00 — ${v < 0 ? 'no data' : v.toFixed(1) + '% CPU'}"></div>`).join('')}</div>
+      <div class="hours-l">${hours.map((_, h) => `<span>${h % 3 ? '' : pad2(h)}</span>`).join('')}</div>`;
+  },
+  renderInsights(d, s, cores) {
+    const R = d.rows, out = [];
+    const add = (lv, txt) => out.push(`<div class="alert-li ${lv}" style="cursor:default">${ic(lv === 'crit' ? 'alert' : lv === 'warn' ? 'info' : 'check', lv ? '' : 'ok-t')}<span class="grow">${txt}</span></div>`);
+    if (!R.length) { $('#tr-ins').innerHTML = '<div class="mute">Not enough data yet.</div>'; return; }
+    add('', `Over the last <b>${this.range}</b> the CPU averaged <b>${s.cpu.avg.toFixed(1)}%</b> (peak ${s.cpu.peak.toFixed(0)}%) and memory <b>${s.mem.avg.toFixed(1)}%</b>.`);
+    // last hour vs the whole window
+    const recent = R.filter(r => r[0] >= Date.now() - 36e5);
+    if (this.range !== '1h' && recent.length > 5 && s.cpu.avg > 1) {
+      const ra = recent.reduce((a, r) => a + r[T_COL.cpu], 0) / recent.length;
+      const x = ra / s.cpu.avg;
+      if (x > 1.5) add('warn', `The last hour is <b>${x.toFixed(1)}× busier</b> than the ${this.range} average (${ra.toFixed(1)}% vs ${s.cpu.avg.toFixed(1)}%).`);
+      else if (x < .6) add('', `The last hour is quieter than usual (${ra.toFixed(1)}% vs ${s.cpu.avg.toFixed(1)}% average).`);
+    }
+    if (s.temp.peak >= 80) add('crit', `Temperature peaked at <b>${s.temp.peak.toFixed(1)}°C</b>, which is in the throttling zone (80–85°C). Better cooling would help.`);
+    else if (s.temp.peak >= 70) add('warn', `Temperature peaked at <b>${s.temp.peak.toFixed(1)}°C</b>, warm but under the throttle point.`);
+    else if (s.temp.avg) add('', `Thermals are comfortable: ${s.temp.avg.toFixed(1)}°C average, ${s.temp.peak.toFixed(1)}°C peak.`);
+    if (s.mem.avg >= 85) add('crit', `Memory has averaged <b>${s.mem.avg.toFixed(0)}%</b>. The Pi is likely swapping, so consider trimming containers or adding RAM/zram.`);
+    else if (s.mem.peak >= 92) add('warn', `Memory briefly hit <b>${s.mem.peak.toFixed(0)}%</b>.`);
+    if (s.load.avg > cores) add('warn', `Average load (${s.load.avg.toFixed(2)}) is above the core count (${cores}), so work is queueing.`);
+    const known = d.hours.filter(v => v >= 0);
+    if (known.length >= 6) {
+      const top = d.hours.indexOf(Math.max(...known)), low = d.hours.indexOf(Math.min(...known));
+      add('', `Busiest around <b>${pad2(top)}:00</b> (${d.hours[top].toFixed(1)}% CPU); quietest around <b>${pad2(low)}:00</b>, a good window for updates and backups.`);
+    }
+    if (s.coverage < .5) add('', `Only ${Math.round(s.coverage * 100)}% of this window has been recorded so far, so these numbers will settle as history builds up.`);
+    $('#tr-ins').innerHTML = out.join('');
   },
 };
 
@@ -1978,7 +2192,7 @@ P.settings = {
             <div><button class="btn pri" id="st-save">${ic('check')}Save thresholds</button></div></div></div>
           <div class="card"><div class="card-h"><h3>${ic('info')} About</h3></div><dl class="kvs">
             <dt>iseall</dt><dd>v${esc(st.version)}</dd><dt>Host</dt><dd>${esc(S.info ? S.info.hostname : '')}</dd>
-            <dt>Shortcuts</dt><dd><kbd>Ctrl K</kbd> command palette · <kbd>/</kbd> filter · <kbd>Esc</kbd> close<br><kbd>g</kbd> then ${PAGES.map(p => `<kbd title="${p.t}">${p.k}</kbd>`).join(' ')} to jump between pages</dd></dl></div>
+            <dt>Shortcuts</dt><dd><kbd>Ctrl K</kbd> command palette · <kbd>/</kbd> filter · <kbd>[</kbd> sidebar · <kbd>Esc</kbd> close<br><kbd>g</kbd> then ${PAGES.map(p => `<kbd title="${p.t}">${p.k}</kbd>`).join(' ')} to jump between pages</dd></dl></div>
         </div>
         <div class="col" style="gap:16px">
           <div class="card"><div class="card-h"><h3>${ic('sun')} Appearance</h3></div><div class="col" style="gap:14px">
@@ -2068,6 +2282,7 @@ function openPalette() {
     { g: 'Actions', t: 'Show failed services', i: 'alert', fn: () => navigate('services', 'f=failed') },
     { g: 'Actions', t: 'Show exposed ports', i: 'globe', fn: () => navigate('ports') },
     { g: 'Actions', t: 'Toggle light / dark theme', i: 'sun', fn: toggleTheme },
+    { g: 'Actions', t: 'Collapse / expand sidebar', i: 'chev', k: '[', fn: toggleSide },
     { g: 'Actions', t: 'Toggle lite mode', i: 'zap', fn: () => { store.set('lite', !store.get('lite', false)); applyLite(); } },
     { g: 'Actions', t: 'Reboot…', i: 'restart', fn: () => power('reboot') },
     { g: 'Actions', t: 'Shut down…', i: 'power', fn: () => power('shutdown') },
@@ -2145,6 +2360,7 @@ document.addEventListener('keydown', e => {
   const typing = /INPUT|TEXTAREA|SELECT/.test(e.target.tagName) || e.target.isContentEditable || e.target.closest('.xterm');
   if (typing || e.ctrlKey || e.metaKey || e.altKey || !app || overlays.length) return;
   if (e.key === '/') { const s = $('#pg .search input'); if (s) { e.preventDefault(); s.focus(); s.select(); } return; }
+  if (e.key === '[') { e.preventDefault(); toggleSide(); return; }
   if (e.key === 'g') { gPending = Date.now(); return; }
   if (gPending && Date.now() - gPending < 1200) {
     gPending = 0;

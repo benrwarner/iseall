@@ -8,6 +8,7 @@ One ~8 MB static Go binary serves a live web UI: open it from your laptop or pho
 | Page | What you get |
 |---|---|
 | **Overview** | Live CPU / memory / temperature / disk gauges, 5-minute charts, per-core heat grid, load, Pi under-voltage & throttle flags, alerts, and a launchpad for every web app on the box |
+| **Trends** | Rolling averages over 1h / 6h / 24h / 7d / 30d for CPU, memory, temperature, load, network and disk: averages, peaks, totals, plain-English insights (e.g. "last hour is 2× busier than usual", "peaked near the throttle point") and a busiest-hours-of-day chart. History survives reboots |
 | **Processes** | Every process with CPU, memory, age, command line, and the **Docker container or systemd service it belongs to**. Sort, filter, signal, renice, inspect |
 | **Network** | Per-interface live throughput, addresses, Wi-Fi signal, errors/drops, gateway & DNS |
 | **Storage** | Filesystems (with a timeout so dead NFS mounts can't hang it), inodes, devices, per-disk I/O |
@@ -21,7 +22,7 @@ One ~8 MB static Go binary serves a live web UI: open it from your laptop or pho
 | **Settings** | Alert thresholds, theme, Lite mode, password, reboot/shutdown |
 
 `Ctrl K` opens a command palette that searches pages, containers, services, processes and web UIs, and runs actions.
-`g` then a letter jumps between pages, and `/` focuses the filter.
+`g` then a letter jumps between pages, `[` collapses the sidebar to icons, and `/` focuses the filter.
 
 ## Install on the Pi
 
@@ -59,6 +60,7 @@ Host PID and network namespaces let it see real processes, ports and interfaces,
 - **Reads the kernel directly.** Stats come from `/proc` and `/sys`, and Docker CPU/memory come from cgroup files instead of the expensive `docker stats` API. Port ownership comes from socket inodes.
 - **Samples only when someone's watching.** 1 s while a browser is connected and 5 s otherwise. Heavy views (processes, ports) are computed on demand only while that page is open, and only while the tab is visible.
 - **Caches the slow stuff.** Command lines and cgroups once per process lifetime, restart policies, `systemd-analyze`, and web-UI probes.
+- Long-term history is aggregated into 1-minute buckets (24 h) and 15-minute buckets (30 days) in memory. It's saved to `history.json` next to the config every 10 minutes and on shutdown (~400 KB), which means negligible SD-card wear.
 - ~15–20 MB RSS. The service unit caps it at `MemoryMax=96M`.
 
 ## Security notes

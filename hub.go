@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -40,10 +41,12 @@ type hub struct {
 	tick   int
 	failed []string
 	failAt time.Time
+	trend  *trends
 }
 
 func newHub() *hub {
-	return &hub{subs: map[chan []byte]struct{}{}, wake: make(chan struct{}, 1), s: newSampler(), info: readSysInfo()}
+	return &hub{subs: map[chan []byte]struct{}{}, wake: make(chan struct{}, 1), s: newSampler(), info: readSysInfo(),
+		trend: newTrends(filepath.Join(filepath.Dir(cfg.path), "history.json"))}
 }
 
 func sseFrame(event string, v any) []byte {
@@ -74,6 +77,7 @@ func (h *hub) run() {
 			time.Sleep(200 * time.Millisecond)
 		}
 		smp := h.s.sample()
+		h.trend.add(smp)
 		h.mu.Lock()
 		h.hist = append(h.hist, smp)
 		if len(h.hist) > histLen {

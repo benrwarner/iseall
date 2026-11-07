@@ -16,10 +16,12 @@ import (
 	"mime"
 	"net/http"
 	"os"
+	"os/signal"
 	"path"
 	"runtime/debug"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -57,6 +59,14 @@ func main() {
 
 	h := newHub()
 	go h.run()
+	// flush long-term history on stop/reboot so rolling averages survive restarts
+	go func() {
+		c := make(chan os.Signal, 1)
+		signal.Notify(c, syscall.SIGTERM, syscall.SIGINT)
+		<-c
+		h.trend.save()
+		os.Exit(0)
+	}()
 
 	mux := http.NewServeMux()
 	registerRoutes(mux, h)

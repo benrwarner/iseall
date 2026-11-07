@@ -18,6 +18,7 @@ func registerRoutes(mux *http.ServeMux, h *hub) {
 	a("GET /api/procs/{pid}", handleProcDetail)
 	a("POST /api/procs/signal", handleSignal)
 	a("GET /api/ports", handlePorts)
+	a("GET /api/trends", h.handleTrends)
 
 	a("GET /api/docker", handleDocker)
 	a("GET /api/docker/images", handleDockerImages)
