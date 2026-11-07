@@ -1,0 +1,71 @@
+name: Publish image to GHCR
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ghcr-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Vet
+        run: go vet ./...
+      - name: Build every Pi target
+        run: |
+          for t in arm64 "arm 7" "arm 6" amd64; do
+            set -- $t
+            CGO_ENABLED=0 GOOS=linux GOARCH=$1 GOARM=${2:-} go build -trimpath -o /dev/null .
+          done
+
+  publish:
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Short SHA
+        id: sha
+        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64,linux/arm/v7,linux/arm/v6
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: VERSION=${{ steps.sha.outputs.short }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
