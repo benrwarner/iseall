@@ -14,11 +14,13 @@ import (
 	"io/fs"
 	"log"
 	"mime"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -38,6 +40,11 @@ func main() {
 	setPass := flag.Bool("passwd", false, "set the dashboard password and exit")
 	showVer := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+	if _, p, err := net.SplitHostPort(*addr); err == nil {
+		if n, err := strconv.Atoi(p); err == nil {
+			listenPort = n // peers are probed for iseall on the same port
+		}
+	}
 	if *showVer {
 		fmt.Println(version)
 		return

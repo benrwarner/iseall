@@ -89,6 +89,8 @@ const IC = {
   rocket: '<path d="M4.5 16.5c-1.5 1.3-2 5-2 5s3.7-.5 5-2c.7-.8.7-2.1-.1-2.9a2.2 2.2 0 0 0-2.9-.1z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.9A12.9 12.9 0 0 1 22 2c0 2.7-.8 7.5-6 11a22.4 22.4 0 0 1-4 2z"/><path d="M9 12H4s.6-3 2-4c1.6-1.1 5 0 5 0M12 15v5s3-.6 4-2c1.1-1.6 0-5 0-5"/>',
   activity: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
   link: '<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>',
+  mesh: '<circle cx="5" cy="12" r="2.2"/><circle cx="19" cy="5" r="2.2"/><circle cx="19" cy="19" r="2.2"/><path d="M7 11 17 6M7 13l10 5M19 7.2v9.6"/>',
+  copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
   trend: '<path d="M3 3v18h18"/><path d="m7 14 4-4 3 3 6-7"/>',
   chev: '<path d="m11 17-5-5 5-5M18 17l-5-5 5-5"/>',
   pkg: '<path d="m7.5 4.3 9 5.2M21 8v8l-9 5-9-5V8l9-5z"/><path d="M3.3 7 12 12l8.7-5M12 22V12"/>',
@@ -546,6 +548,7 @@ const PAGES = [
   { id: 'processes', t: 'Processes', i: 'cpu', k: 'p' },
   { id: 'network', t: 'Network', i: 'wifi', k: 'n' },
   { id: 'storage', t: 'Storage', i: 'disk', k: 'f' },
+  { id: 'tailnet', t: 'Tailscale', i: 'mesh', k: 'm' },
   { id: 'docker', t: 'Docker', i: 'box', sec: 'Manage', k: 'd', cnt: 'n-docker' },
   { id: 'services', t: 'Services', i: 'layers', k: 's', cnt: 'n-services' },
   { id: 'startup', t: 'Startup', i: 'rocket', k: 'b' },
@@ -1898,6 +1901,89 @@ P.network = {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  page: tailscale — every device on the tailnet, and a jump into any other iseall
+// ═══════════════════════════════════════════════════════════════════════════
+
+// clipboard API needs a secure context; plain-http dashboards fall back to execCommand
+function copyText(t) {
+  const done = () => toast(`Copied ${t}`, 'ok', 1800);
+  if (navigator.clipboard && isSecureContext) return navigator.clipboard.writeText(t).then(done, () => { });
+  const ta = document.createElement('textarea');
+  ta.value = t; ta.style.position = 'fixed'; ta.style.opacity = '0';
+  document.body.appendChild(ta); ta.select();
+  try { document.execCommand('copy'); done(); } catch { }
+  ta.remove();
+}
+
+P.tailnet = {
+  every: 15000,
+  mount(el) {
+    this.el = el;
+    this.q = ''; this.f = 'all'; this.d = null;
+    el.innerHTML = `
+      <div class="summary" id="tn-sum">${'<div class="card"><div class="skel"></div><div class="skel"></div></div>'.repeat(4)}</div>
+      <div class="toolbar">
+        <div class="search">${ic('search')}<input class="in" id="tn-q" placeholder="Device, IP, OS…  ( / )"></div>
+        <div class="btn-group" id="tn-f"><button data-f="all" class="on">All</button><button data-f="online">Online</button><button data-f="iseall">Running iseall</button></div>
+        <div class="r"><span class="mute" id="tn-net" style="font-size:12.5px"></span><button class="btn sm" id="tn-r">${ic('restart')}Refresh</button></div>
+      </div>
+      <div id="tn-b"><div class="devs">${'<div class="card"><div class="skel"></div><div class="skel"></div><div class="skel"></div></div>'.repeat(3)}</div></div>`;
+    $('#tn-q', el).oninput = debounce(e => { this.q = e.target.value.toLowerCase(); this.render(); }, 120);
+    $('#tn-f', el).onclick = e => { const b = e.target.closest('[data-f]'); if (!b) return; this.f = b.dataset.f; $$('#tn-f button').forEach(x => x.classList.toggle('on', x === b)); this.render(); };
+    $('#tn-r', el).onclick = async e => { const b = e.currentTarget; b.disabled = true; await this.poll().catch(() => { }); b.disabled = false; };
+    $('#tn-b', el).onclick = e => { const c = e.target.closest('[data-copy]'); if (c) { e.preventDefault(); copyText(c.dataset.copy); } };
+  },
+  async poll() { const d = await api('/api/tailscale'); if (pageId !== 'tailnet') return; this.d = d; S.cache.ts = d; this.render(); },
+  render() {
+    const d = this.d;
+    if (!d) return;
+    if (!d.available) {
+      $('#tn-sum').innerHTML = '';
+      $('#tn-b').innerHTML = `<div class="card empty">${ic('mesh')}<b>Tailscale isn't available here</b>${esc(d.reason || '')}<br><span class="mute">Install it with <span class="mono">curl -fsSL https://tailscale.com/install.sh | sh</span>, then <span class="mono">sudo tailscale up</span>.</span></div>`;
+      return;
+    }
+    const devs = d.devices;
+    const online = devs.filter(x => x.online).length;
+    const withIseall = devs.filter(x => x.iseall && !x.self).length;
+    const direct = devs.filter(x => !x.self && x.online && x.direct).length;
+    $('#tn-net').textContent = d.tailnet ? `tailnet · ${d.tailnet}` : '';
+    $('#tn-sum').innerHTML = [
+      ['Devices', devs.length, 'in your tailnet', ''],
+      ['Online', online, `${devs.length - online} offline`, online ? 'ok-t' : ''],
+      ['Running iseall', withIseall, `other dashboards on :${d.port}`, withIseall ? 'ok-t' : ''],
+      ['Direct connections', direct, 'peer-to-peer, not relayed', ''],
+    ].map(([l, v, s, c]) => `<div class="card"><div class="label">${l}</div><div class="big ${c}">${v}</div><div class="label">${s}</div></div>`).join('');
+    let list = devs;
+    if (this.f === 'online') list = list.filter(x => x.online);
+    if (this.f === 'iseall') list = list.filter(x => x.iseall);
+    if (this.q) list = list.filter(x => `${x.name} ${x.dns} ${x.ips.join(' ')} ${x.os}`.toLowerCase().includes(this.q));
+    $('#tn-b').innerHTML = list.length ? `<div class="devs">${list.map(x => {
+      const conn = x.self ? '' : !x.online ? `last seen ${x.lastSeen ? ago(x.lastSeen) : 'a while ago'}` : x.direct ? 'direct connection' : `relayed${x.relay ? ' via ' + esc(x.relay) : ''}`;
+      let foot;
+      if (x.self) foot = `<span class="badge acc">${ic('eye')}You're here</span><span class="mute" style="font-size:12px;margin-left:auto">iseall v${esc(x.iseall.version)}</span>`;
+      else if (x.iseall) foot = `<a class="btn pri sm" href="${esc(x.iseall.url)}" target="_blank" rel="noopener">${ic('ext')}Open iseall</a>
+        <span class="mute" style="font-size:12px;margin-left:auto">${x.iseall.setup ? '<span class="warn-t">needs a password set</span>' : 'v' + esc(x.iseall.version)}</span>`;
+      else if (!x.online) foot = `<span class="mute" style="font-size:12.5px">${ic('power')} Offline</span>`;
+      else if (x.os === 'iOS' || x.os === 'android') foot = `<span class="mute" style="font-size:12.5px">Phone — not checked for iseall</span>`;
+      else foot = `<span class="mute" style="font-size:12.5px">No iseall on :${d.port}</span>`;
+      return `<div class="card dev ${x.online ? '' : 'off'} ${x.iseall && !x.self ? 'hl' : ''}">
+        <div class="row" style="align-items:flex-start">
+          <span class="dot ${x.online ? 'ok pulse' : ''}" style="margin-top:7px"></span>
+          <div class="grow" style="min-width:0"><div class="nm trunc" style="font-weight:650;font-size:15px">${esc(x.name)}</div><div class="mono dim trunc" style="font-size:11.5px" title="${esc(x.dns)}">${esc(x.dns)}</div></div>
+          ${x.os ? `<span class="badge mute">${esc(x.os)}</span>` : ''}
+        </div>
+        <div class="chips">${x.ips.map(ip => `<a class="chip" href="#" data-copy="${esc(ip)}" title="Copy">${esc(ip)}${ic('copy')}</a>`).join('')}
+          ${x.exitNode ? '<span class="badge warn">exit node in use</span>' : x.exitOption ? '<span class="badge mute">exit node</span>' : ''}</div>
+        <div class="row" style="justify-content:space-between;font-size:12.5px"><span class="mute">${conn}</span>${x.online && !x.self && (x.rx || x.tx) ? `<span class="num mute">↓ ${fmtB(x.rx)} · ↑ ${fmtB(x.tx)}</span>` : ''}</div>
+        <div class="foot">${foot}</div>
+      </div>`;
+    }).join('')}</div>
+    <div class="mute" style="font-size:12px;margin-top:14px">${ic('info')} Opening another iseall needs the device you're browsing from to be on the tailnet too. Each dashboard has its own password.</div>`
+      : `<div class="card empty">${ic('mesh')}<b>No devices match</b></div>`;
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  page: storage
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -2325,6 +2411,7 @@ function openPalette() {
     S.cache.ports = p;
     add(p.listen.filter(l => l.web && l.scope !== 'local').map(l => ({ g: 'Web UIs', t: l.web.title || `${l.proc} :${l.port}`, sub: `${l.web.scheme}://${location.hostname}:${l.port}`, i: 'globe', fn: () => window.open(`${l.web.scheme}://${location.hostname}:${l.port}/`, '_blank', 'noopener') })));
   }).catch(() => { });
+  api('/api/tailscale').then(d => { if (d.available) add(d.devices.filter(x => x.iseall && !x.self).map(x => ({ g: 'Tailscale', t: `Open iseall on ${x.name}`, sub: x.iseall.url, i: 'mesh', fn: () => window.open(x.iseall.url, '_blank', 'noopener') }))); }).catch(() => { });
   api('/api/procs').then(d => add(d.procs.filter(p => !p.k).sort((a, b) => b.cpu - a.cpu).slice(0, 40).map(p => ({ g: 'Processes', t: `${p.name} · ${p.pid}`, sub: p.cmd, i: 'cpu', fn: () => procDrawer(p) })))).catch(() => { });
 }
 
