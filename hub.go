@@ -42,6 +42,10 @@ type hub struct {
 	failed []string
 	failAt time.Time
 	trend  *trends
+
+	slowMu     sync.Mutex // guards computeSlow state and the cached result below
+	lastSlow   *slowPayload
+	lastSlowAt time.Time
 }
 
 func newHub() *hub {
@@ -90,7 +94,7 @@ func (h *hub) run() {
 		}
 		h.broadcast(sseFrame("s", smp))
 		if h.tick%5 == 0 {
-			fr := sseFrame("slow", h.computeSlow(smp))
+			fr := sseFrame("slow", h.freshSlow(smp, 0))
 			h.mu.Lock()
 			h.slow = fr
 			h.mu.Unlock()
@@ -109,6 +113,18 @@ func (h *hub) broadcast(b []byte) {
 		default: // slow client: drop a frame rather than block everyone
 		}
 	}
+}
+
+// freshSlow returns the slow-changing stats, recomputing them when older than maxAge.
+func (h *hub) freshSlow(smp Sample, maxAge time.Duration) slowPayload {
+	h.slowMu.Lock()
+	defer h.slowMu.Unlock()
+	if h.lastSlow != nil && time.Since(h.lastSlowAt) < maxAge {
+		return *h.lastSlow
+	}
+	sp := h.computeSlow(smp)
+	h.lastSlow, h.lastSlowAt = &sp, time.Now()
+	return sp
 }
 
 func (h *hub) computeSlow(smp Sample) slowPayload {

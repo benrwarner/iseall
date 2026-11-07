@@ -19,6 +19,13 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+# iseall reads /proc, /sys and systemd directly, so it only runs on Linux
+if [ "$(uname -s)" != "Linux" ]; then
+  echo "iseall runs on Linux (Raspberry Pi OS, Debian, Ubuntu, …) — this machine is $(uname -s), so nothing was installed."
+  echo "You can still open any of your iseall dashboards from this machine's browser."
+  exit 1
+fi
+command -v systemctl >/dev/null 2>&1 || { echo "iseall needs systemd, which this system doesn't have."; exit 1; }
 [ "$(id -u)" -eq 0 ] || { echo "Run with sudo."; exit 1; }
 cd "$(dirname "$0")"
 

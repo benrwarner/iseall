@@ -1915,8 +1915,33 @@ function copyText(t) {
   ta.remove();
 }
 
+// live health block for a device card, from that device's /api/pulse
+function peerMetrics(x) {
+  if (!x.iseall) return '';
+  if (!x.pulse) {
+    const why = { update: 'Update iseall on this device to see its live metrics.', disabled: 'Metrics sharing is turned off on this device.', unreachable: "Couldn't reach it for metrics.", error: 'Metrics unavailable right now.' }[x.pulseErr];
+    return why ? `<div class="mute" style="font-size:12.5px">${ic('info')} ${why}</div>` : '';
+  }
+  const p = x.pulse;
+  const tile = (l, v, pct, lv) => `<div><div class="label"><span>${l}</span><b>${v}</b></div>${bar(pct, lv, 'thin')}</div>`;
+  return `<div class="pm">
+      ${tile('CPU', p.cpu.toFixed(0) + '%', p.cpu, lvl(p.cpu, 75, 90))}
+      ${tile('Mem', p.mem.toFixed(0) + '%', p.mem, lvl(p.mem, 80, 92))}
+      ${tile('Temp', p.temp ? p.temp.toFixed(0) + '°' : '—', p.temp / 85 * 100, p.temp ? lvl(p.temp, 70, 80) : '')}
+      ${tile('Disk', p.diskT ? p.disk.toFixed(0) + '%' : '—', p.disk, lvl(p.disk, 80, 90))}
+    </div>
+    <canvas class="spark" data-pspark="${esc(x.ip)}" title="CPU, last minute"></canvas>
+    <div class="chips">
+      <span class="chip">${ic('clock')}up ${fmtDur(p.up)}</span>
+      <span class="chip" title="1-minute load / cores">load ${p.load[0].toFixed(2)}/${p.cores}</span>
+      <span class="chip" title="Average CPU over the last 24h">24h avg ${p.cpu24.toFixed(1)}%</span>
+      ${p.docker ? `<span class="chip" title="Containers running">${ic('box')}${p.ctrRun}/${p.ctrTotal}</span>` : ''}
+      ${p.crit ? `<span class="badge crit">${plural(p.crit, 'alert')}</span>` : p.warn ? `<span class="badge warn">${plural(p.warn, 'warning')}</span>` : `<span class="badge ok">${ic('check')}healthy</span>`}
+    </div>`;
+}
+
 P.tailnet = {
-  every: 15000,
+  every: 10000,
   mount(el) {
     this.el = el;
     this.q = ''; this.f = 'all'; this.d = null;
@@ -1945,13 +1970,14 @@ P.tailnet = {
     const devs = d.devices;
     const online = devs.filter(x => x.online).length;
     const withIseall = devs.filter(x => x.iseall && !x.self).length;
-    const direct = devs.filter(x => !x.self && x.online && x.direct).length;
+    const attn = devs.filter(x => x.pulse && x.pulse.crit).length;
+    const warned = devs.filter(x => x.pulse && !x.pulse.crit && x.pulse.warn).length;
     $('#tn-net').textContent = d.tailnet ? `tailnet · ${d.tailnet}` : '';
     $('#tn-sum').innerHTML = [
       ['Devices', devs.length, 'in your tailnet', ''],
       ['Online', online, `${devs.length - online} offline`, online ? 'ok-t' : ''],
       ['Running iseall', withIseall, `other dashboards on :${d.port}`, withIseall ? 'ok-t' : ''],
-      ['Direct connections', direct, 'peer-to-peer, not relayed', ''],
+      ['Need attention', attn, warned ? `${warned} more with warnings` : 'critical alerts across dashboards', attn ? 'crit-t' : 'ok-t'],
     ].map(([l, v, s, c]) => `<div class="card"><div class="label">${l}</div><div class="big ${c}">${v}</div><div class="label">${s}</div></div>`).join('');
     let list = devs;
     if (this.f === 'online') list = list.filter(x => x.online);
@@ -1968,10 +1994,11 @@ P.tailnet = {
       else foot = `<span class="mute" style="font-size:12.5px">No iseall on :${d.port}</span>`;
       return `<div class="card dev ${x.online ? '' : 'off'} ${x.iseall && !x.self ? 'hl' : ''}">
         <div class="row" style="align-items:flex-start">
-          <span class="dot ${x.online ? 'ok pulse' : ''}" style="margin-top:7px"></span>
+          <span class="dot ${!x.online ? '' : x.pulse && x.pulse.crit ? 'crit pulse' : x.pulse && x.pulse.warn ? 'warn pulse' : 'ok pulse'}" style="margin-top:7px"></span>
           <div class="grow" style="min-width:0"><div class="nm trunc" style="font-weight:650;font-size:15px">${esc(x.name)}</div><div class="mono dim trunc" style="font-size:11.5px" title="${esc(x.dns)}">${esc(x.dns)}</div></div>
           ${x.os ? `<span class="badge mute">${esc(x.os)}</span>` : ''}
         </div>
+        ${peerMetrics(x)}
         <div class="chips">${x.ips.map(ip => `<a class="chip" href="#" data-copy="${esc(ip)}" title="Copy">${esc(ip)}${ic('copy')}</a>`).join('')}
           ${x.exitNode ? '<span class="badge warn">exit node in use</span>' : x.exitOption ? '<span class="badge mute">exit node</span>' : ''}</div>
         <div class="row" style="justify-content:space-between;font-size:12.5px"><span class="mute">${conn}</span>${x.online && !x.self && (x.rx || x.tx) ? `<span class="num mute">↓ ${fmtB(x.rx)} · ↑ ${fmtB(x.tx)}</span>` : ''}</div>
@@ -1980,6 +2007,7 @@ P.tailnet = {
     }).join('')}</div>
     <div class="mute" style="font-size:12px;margin-top:14px">${ic('info')} Opening another iseall needs the device you're browsing from to be on the tailnet too. Each dashboard has its own password.</div>`
       : `<div class="card empty">${ic('mesh')}<b>No devices match</b></div>`;
+    $$('canvas[data-pspark]').forEach(cv => { const x = devs.find(v => v.ip === cv.dataset.pspark); if (x && x.pulse) spark(cv, x.pulse.spark, '--acc', 100); });
   },
 };
 
@@ -2285,6 +2313,8 @@ P.settings = {
             <div class="row" style="justify-content:space-between"><span>Theme</span><div class="btn-group" id="st-theme"><button data-v="dark">Dark</button><button data-v="light">Light</button><button data-v="auto">System</button></div></div>
             <label class="check" style="justify-content:space-between"><span>Lite mode<div class="mute" style="font-size:12px">No animations or glows — best on the Pi's own screen</div></span><span class="switch"><input type="checkbox" id="st-lite" ${store.get('lite', false) ? 'checked' : ''}><i></i></span></label>
           </div></div>
+          <div class="card"><div class="card-h"><h3>${ic('mesh')} Tailnet</h3></div>
+            <label class="check" style="justify-content:space-between"><span>Share health with other iseall dashboards<div class="mute" style="font-size:12px">CPU, memory, temperature, disk, uptime and alert counts, only to Tailscale addresses. No processes, logs or controls.</div></span><span class="switch"><input type="checkbox" id="st-pulse" ${st.pulse ? 'checked' : ''}><i></i></span></label></div>
           <div class="card"><div class="card-h"><h3>${ic('lock')} Password</h3></div><div class="col">
             <input class="in" type="password" id="pw-o" placeholder="Current password" autocomplete="current-password">
             <input class="in" type="password" id="pw-n" placeholder="New password (8+ characters)" autocomplete="new-password">
@@ -2298,6 +2328,7 @@ P.settings = {
     const cur = store.get('theme', 'dark');
     $$('#st-theme button').forEach(b => { b.classList.toggle('on', b.dataset.v === cur); b.onclick = () => { setTheme(b.dataset.v); $$('#st-theme button').forEach(x => x.classList.toggle('on', x === b)); }; });
     $('#st-lite').onchange = e => { store.set('lite', e.target.checked); applyLite(); };
+    $('#st-pulse').onchange = e => act(() => post('/api/settings/pulse', { enabled: e.target.checked }), e.target.checked ? 'Sharing health with tailnet dashboards' : 'Stopped sharing health with the tailnet').catch(() => { e.target.checked = !e.target.checked; });
     $('#pw-s').onclick = () => act(() => post('/api/auth/password', { old: $('#pw-o').value, new: $('#pw-n').value }), 'Password changed — other sessions were signed out').then(() => { $('#pw-o').value = ''; $('#pw-n').value = ''; }, () => { });
     $('#st-out').onclick = logout;
     $('#pw-rb').onclick = () => power('reboot');

@@ -11,7 +11,7 @@ One ~8 MB static Go binary serves a live web UI: open it from your laptop or pho
 | **Trends** | Rolling averages over 1h / 6h / 24h / 7d / 30d for CPU, memory, temperature, load, network and disk: averages, peaks, totals, plain-English insights (e.g. "last hour is 2× busier than usual", "peaked near the throttle point") and a busiest-hours-of-day chart. History survives reboots |
 | **Processes** | Every process with CPU, memory, age, command line, and the **Docker container or systemd service it belongs to**. Sort, filter, signal, renice, inspect |
 | **Network** | Per-interface live throughput, addresses, Wi-Fi signal, errors/drops, gateway & DNS |
-| **Tailscale** | Every device on your tailnet: online/offline, last seen, direct vs relayed, traffic, IPs (click to copy). Online peers are checked for another iseall on the same port, and any that have one get an **Open iseall** button (also in Ctrl K). Unclaimed dashboards with no password set are flagged |
+| **Tailscale** | Every device on your tailnet: online/offline, last seen, direct vs relayed, traffic, IPs (click to copy). Online peers are checked for another iseall on the same port, and any that have one get an **Open iseall** button (also in Ctrl K) plus **live metrics**: CPU, memory, temperature, disk, a CPU sparkline, uptime, load, 24h average, containers and alert status. A summary counts dashboards that need attention. Unclaimed dashboards with no password set are flagged |
 | **Storage** | Filesystems (with a timeout so dead NFS mounts can't hang it), inodes, devices, per-disk I/O |
 | **Docker** | Containers grouped by compose stack: start/stop/restart/pause/kill/remove, live CPU sparklines, memory, health, logs, inspect (secrets masked), **shell into the container**, set the restart policy (= start on boot). Stack *Update* (pull + up), images, volumes, networks, prune |
 | **Services** | All systemd units with per-service CPU/memory/tasks, start/stop/restart, **start-at-boot toggle**, live journal, unit file |
@@ -70,6 +70,7 @@ iseall runs as **root** (it must, to see every process and socket and to manage 
 
 - Passwords are PBKDF2-SHA256. Sessions are HMAC-signed `HttpOnly`/`SameSite=Strict` cookies, and changing the password signs everyone out.
 - Login is rate-limited per IP, and every mutating request needs a custom header (CSRF). The WebSocket checks the Origin.
+- `/api/pulse` (the per-device health summary behind the Tailscale page) needs no login but answers **only Tailscale addresses** (100.64.0.0/10, fd7a:115c:a1e0::/48). It holds only coarse health numbers (no process names, logs or controls) and can be switched off under Settings → Tailnet.
 - For access from outside your LAN, put it behind a VPN (Tailscale/WireGuard) rather than port-forwarding it. Optional TLS: `-cert` / `-key`.
 
 ## Flags

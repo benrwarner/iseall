@@ -49,22 +49,24 @@ type iseallPeer struct {
 }
 
 type tsDevice struct {
-	Name     string      `json:"name"`
-	DNS      string      `json:"dns"`
-	IP       string      `json:"ip"`
-	IPs      []string    `json:"ips"`
-	OS       string      `json:"os"`
-	Online   bool        `json:"online"`
-	Self     bool        `json:"self"`
-	LastSeen int64       `json:"lastSeen"`
-	Direct   bool        `json:"direct"`
-	Relay    string      `json:"relay"`
-	Rx       int64       `json:"rx"`
-	Tx       int64       `json:"tx"`
-	ExitNode bool        `json:"exitNode"`
-	ExitOpt  bool        `json:"exitOption"`
-	Iseall   *iseallPeer `json:"iseall,omitempty"`
-	Probed   bool        `json:"probed"`
+	Name     string          `json:"name"`
+	DNS      string          `json:"dns"`
+	IP       string          `json:"ip"`
+	IPs      []string        `json:"ips"`
+	OS       string          `json:"os"`
+	Online   bool            `json:"online"`
+	Self     bool            `json:"self"`
+	LastSeen int64           `json:"lastSeen"`
+	Direct   bool            `json:"direct"`
+	Relay    string          `json:"relay"`
+	Rx       int64           `json:"rx"`
+	Tx       int64           `json:"tx"`
+	ExitNode bool            `json:"exitNode"`
+	ExitOpt  bool            `json:"exitOption"`
+	Iseall   *iseallPeer     `json:"iseall,omitempty"`
+	Probed   bool            `json:"probed"`
+	Pulse    json.RawMessage `json:"pulse,omitempty"`
+	PulseErr string          `json:"pulseErr,omitempty"`
 }
 
 var tsProbe = struct {
@@ -116,7 +118,7 @@ func firstV4(ips []string) string {
 	return ""
 }
 
-func handleTailscale(w http.ResponseWriter, r *http.Request) {
+func (h *hub) handleTailscale(w http.ResponseWriter, r *http.Request) {
 	bin, err := exec.LookPath("tailscale")
 	if err != nil {
 		writeJSON(w, r, map[string]any{"available": false, "reason": "Tailscale isn't installed on this machine."})
@@ -155,6 +157,9 @@ func handleTailscale(w http.ResponseWriter, r *http.Request) {
 	devs := []tsDevice{mk(st.Self, true)}
 	devs[0].Iseall = &iseallPeer{URL: peerURL(devs[0].IP), Version: version}
 	devs[0].Probed = true
+	if b, err := json.Marshal(h.pulse()); err == nil {
+		devs[0].Pulse = b
+	}
 	for _, p := range st.Peer {
 		devs = append(devs, mk(p, false))
 	}
@@ -190,6 +195,20 @@ func handleTailscale(w http.ResponseWriter, r *http.Request) {
 			tsProbe.Unlock()
 			d.Iseall, d.Probed = res, true
 		}(d)
+	}
+	wg.Wait()
+
+	// live health from every peer that runs iseall (always fresh — this is the point of the page)
+	for i := range devs {
+		if d := &devs[i]; d.Iseall != nil && !d.Self {
+			wg.Add(1)
+			go func(d *tsDevice) {
+				defer wg.Done()
+				sem <- struct{}{}
+				d.Pulse, d.PulseErr = fetchPulse(d.IP)
+				<-sem
+			}(d)
+		}
 	}
 	wg.Wait()
 

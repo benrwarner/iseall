@@ -34,6 +34,7 @@ type Config struct {
 	Salt     string     `json:"salt,omitempty"`
 	Secret   string     `json:"secret,omitempty"`
 	Alerts   Thresholds `json:"alerts"`
+	NoPulse  bool       `json:"no_pulse,omitempty"` // stop sharing the health summary with tailnet peers
 
 	mu   sync.RWMutex
 	path string
@@ -331,7 +332,7 @@ func handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	cfg.mu.RLock()
-	t := cfg.Alerts
+	t, share := cfg.Alerts, !cfg.NoPulse
 	cfg.mu.RUnlock()
-	writeJSON(w, r, map[string]any{"alerts": t, "version": version})
+	writeJSON(w, r, map[string]any{"alerts": t, "version": version, "pulse": share})
 }

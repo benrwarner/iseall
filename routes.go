@@ -7,6 +7,8 @@ func registerRoutes(mux *http.ServeMux, h *hub) {
 	mux.HandleFunc("POST /api/auth/setup", handleSetup)
 	mux.HandleFunc("POST /api/auth/login", handleLogin)
 	mux.HandleFunc("POST /api/auth/logout", handleLogout)
+	// unauthenticated, tailnet-only health summary for other iseall instances (see pulse.go)
+	mux.HandleFunc("GET /api/pulse", h.handlePulse)
 
 	a := func(pattern string, fn http.HandlerFunc) { mux.Handle(pattern, requireAuth(fn)) }
 	a("POST /api/auth/password", handleChangePassword)
@@ -19,7 +21,8 @@ func registerRoutes(mux *http.ServeMux, h *hub) {
 	a("POST /api/procs/signal", handleSignal)
 	a("GET /api/ports", handlePorts)
 	a("GET /api/trends", h.handleTrends)
-	a("GET /api/tailscale", handleTailscale)
+	a("GET /api/tailscale", h.handleTailscale)
+	a("POST /api/settings/pulse", handlePulseSetting)
 
 	a("GET /api/docker", handleDocker)
 	a("GET /api/docker/images", handleDockerImages)
