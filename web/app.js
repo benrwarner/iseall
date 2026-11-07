@@ -159,6 +159,7 @@ function openOverlay(cls, html, onClose) {
   el.className = cls;
   el.innerHTML = html;
   document.body.append(scrim, el);
+  document.documentElement.classList.add('locked');
   const o = {
     el, closed: false,
     close() {
@@ -166,6 +167,7 @@ function openOverlay(cls, html, onClose) {
       o.closed = true;
       scrim.remove(); el.remove();
       overlays.splice(overlays.indexOf(o), 1);
+      if (!overlays.length) document.documentElement.classList.remove('locked');
       onClose && onClose();
     },
   };
@@ -623,9 +625,8 @@ function route() {
   const meta = PAGES.find(p => p.id === id);
   $$('.nav a').forEach(a => a.classList.toggle('on', a.dataset.p === id));
   $('#title').innerHTML = `${esc(meta.t)}<span class="crumb">${S.info ? '· ' + esc(S.info.hostname) : ''}</span>`;
-  const content = $('#content');
-  content.scrollTop = 0;
-  content.innerHTML = '<div class="page" id="pg"></div>';
+  scrollTo(0, 0);
+  $('#content').innerHTML = '<div class="page" id="pg"></div>';
   page = P[id];
   page.mount($('#pg'), q);
   if (page.poll) startPoll(() => page.poll(), page.every || 3000);
