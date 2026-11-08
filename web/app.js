@@ -93,6 +93,7 @@ const IC = {
   copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
   trend: '<path d="M3 3v18h18"/><path d="m7 14 4-4 3 3 6-7"/>',
   chev: '<path d="m11 17-5-5 5-5M18 17l-5-5 5-5"/>',
+  server: '<rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6.5h.01M7 17.5h.01M11 6.5h6M11 17.5h6"/>',
   pkg: '<path d="m7.5 4.3 9 5.2M21 8v8l-9 5-9-5V8l9-5z"/><path d="M3.3 7 12 12l8.7-5M12 22V12"/>',
 };
 const ic = (n, cls = '') => `<svg class="i ${cls}" viewBox="0 0 24 24">${IC[n] || ''}</svg>`;
@@ -551,6 +552,7 @@ const PAGES = [
   { id: 'tailnet', t: 'Tailscale', i: 'mesh', k: 'm' },
   { id: 'docker', t: 'Docker', i: 'box', sec: 'Manage', k: 'd', cnt: 'n-docker' },
   { id: 'services', t: 'Services', i: 'layers', k: 's', cnt: 'n-services' },
+  { id: 'nginx', t: 'Nginx', i: 'server', k: 'w' },
   { id: 'startup', t: 'Startup', i: 'rocket', k: 'b' },
   { id: 'ports', t: 'Ports', i: 'plug', k: 'x' },
   { id: 'logs', t: 'Logs', i: 'list', sec: 'Tools', k: 'l' },
@@ -1899,6 +1901,357 @@ P.network = {
     if (S.s) this.sample(S.s);
   },
 };
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  page: nginx — status, sites, config editor (tested before it's kept), traffic, logs
+// ═══════════════════════════════════════════════════════════════════════════
+
+const NGX_TPL = {
+  proxy: { l: 'Reverse proxy', d: 'Forward a domain to an app on a local port' },
+  static: { l: 'Static site', d: 'Serve files from a folder' },
+  redirect: { l: 'Redirect', d: 'Send every request to another URL' },
+};
+function ngxTemplate(v) {
+  const names = (v.domains || '').split(/[\s,]+/).filter(Boolean).join(' ') || '_';
+  const port = +v.port || 80;
+  const listen = `    listen ${port};\n    listen [::]:${port};\n    server_name ${names};\n`;
+  if (v.type === 'static') return `server {\n${listen}\n    root ${v.root || '/var/www/html'};\n    index index.html index.htm;\n\n    location / {\n        try_files $uri $uri/ =404;\n    }\n}\n`;
+  if (v.type === 'redirect') return `server {\n${listen}\n    return 301 ${(v.target || 'https://example.com').replace(/\/$/, '')}$request_uri;\n}\n`;
+  let up = (v.upstream || '127.0.0.1:3000').trim();
+  if (/^\d+$/.test(up)) up = '127.0.0.1:' + up;
+  if (!/^https?:\/\//.test(up)) up = 'http://' + up;
+  return `server {\n${listen}\n    client_max_body_size 64m;\n\n    location / {\n        proxy_pass ${up};\n        proxy_http_version 1.1;\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n        proxy_set_header X-Forwarded-Proto $scheme;\n        proxy_set_header Upgrade $http_upgrade;\n        proxy_set_header Connection "upgrade";\n        proxy_read_timeout 300s;\n    }\n}\n`;
+}
+
+// "where does this site send traffic" in one short line
+function ngxTarget(sv) {
+  if (sv.proxies && sv.proxies.length) return `${ic('ext')}<span class="mono">${esc(sv.proxies.join(', '))}</span>`;
+  if (sv.return) return `<span class="mute">return</span> <span class="mono">${esc(sv.return)}</span>`;
+  if (sv.root) return `${ic('disk')}<span class="mono">${esc(sv.root)}</span>`;
+  return '';
+}
+const ngxDomains = s => [...new Set(s.servers.flatMap(v => v.names))].filter(n => n && n !== '_' && n !== 'localhost' && !n.startsWith('~') && !n.includes('*') && n.includes('.'));
+const ngxName = s => s.name.replace(/\.conf(\.disabled)?$/, '');
+
+P.nginx = {
+  every: 5000,
+  mount(el, q) {
+    this.el = el;
+    this.tab = q.get('tab') || 'sites';
+    this.q = ''; this.d = null; this.stopLog = null; this.logKind = 'access';
+    el.innerHTML = `
+      <div id="ng-test"></div>
+      <div class="summary" id="ng-sum">${'<div class="card"><div class="skel"></div><div class="skel"></div></div>'.repeat(5)}</div>
+      <div class="toolbar">
+        <div class="btn-group" id="ng-ctl"></div>
+        <div class="r"><button class="btn" id="ng-conf">${ic('edit')}nginx.conf</button><button class="btn pri" id="ng-new">${ic('plus')}New site</button></div>
+      </div>
+      <div class="tabs" id="ng-tabs">
+        <button data-t="sites">${ic('globe')}Sites <span class="cnt" id="ng-n"></span></button>
+        <button data-t="traffic">${ic('activity')}Traffic</button>
+        <button data-t="logs">${ic('list')}Logs</button>
+      </div>
+      <div id="ng-b"><div class="card"><div class="skel"></div><div class="skel"></div></div></div>`;
+    $('#ng-tabs', el).onclick = e => { const b = e.target.closest('[data-t]'); if (b) { this.tab = b.dataset.t; this.syncTabs(); this.render(true); } };
+    $('#ng-ctl', el).onclick = e => { const b = e.target.closest('[data-c]'); if (b) this.ctl(b.dataset.c, b); };
+    $('#ng-test', el).onclick = e => { const b = e.target.closest('[data-c]'); if (b) this.ctl(b.dataset.c, b); };
+    $('#ng-new', el).onclick = () => this.newSite();
+    $('#ng-conf', el).onclick = () => this.d && ngxEdit(this.d.conf, () => this.poll().catch(() => { }));
+    $('#ng-b', el).onclick = e => this.click(e);
+    $('#ng-b', el).onchange = e => {
+      const t = e.target.closest('[data-en]'); if (!t || !this.d) return;
+      const s = this.d.sites.find(x => x.id === t.dataset.en);
+      if (s) this.siteAction(s, t.checked ? 'enable' : 'disable');
+    };
+    this.syncTabs();
+  },
+  unmount() { this.stopLog && this.stopLog(); this.stopLog = null; },
+  syncTabs() { $$('#ng-tabs button').forEach(b => b.classList.toggle('on', b.dataset.t === this.tab)); },
+  async poll() { const d = await api('/api/nginx'); if (pageId !== 'nginx') return; this.d = d; this.render(); },
+  render(tabChanged = false) {
+    const d = this.d;
+    if (!d) return;
+    if (!d.installed) {
+      $('#ng-sum').innerHTML = ''; $('#ng-ctl').innerHTML = ''; $('#ng-tabs').classList.add('hide');
+      $('#ng-new').classList.add('hide'); $('#ng-conf').classList.add('hide');
+      $('#ng-b').innerHTML = `<div class="card empty">${ic('globe')}<b>Nginx isn't installed</b><span class="mute">Install it with <span class="mono">sudo apt install nginx</span> (or your distro's package manager), then come back here.</span></div>`;
+      return;
+    }
+    const sv = d.service, on = sv.ActiveState === 'active';
+    const since = on && sv.ActiveEnterTimestamp ? Date.parse(sv.ActiveEnterTimestamp.replace(/^\w+ /, '').replace(/ [A-Z]{2,5}$/, '')) : 0;
+    const st = d.stats, total = st.status.reduce((a, b) => a + b, 0);
+    const lastHour = st.perMin.reduce((a, b) => a + b, 0);
+    const err5 = total ? st.status[5] / total * 100 : 0;
+    const en = d.sites.filter(s => s.enabled).length;
+    $('#ng-test').innerHTML = d.test.ok ? '' : `<div class="card" style="border-color:var(--crit);margin-bottom:16px"><div class="card-h"><h3 class="crit-t">${ic('alert')} Config test failing</h3><div class="r"><button class="btn sm" data-c="test">${ic('restart')}Re-test</button></div></div>
+      <pre class="out">${esc(d.test.out)}</pre><div class="mute" style="font-size:12.5px;margin-top:8px">Nginx keeps serving its last good config, but reloads and restarts are blocked until this is fixed.</div></div>`;
+    const state = on ? ['ok-t', 'Running'] : sv.ActiveState === 'failed' ? ['crit-t', 'Failed'] : ['warn-t', 'Stopped'];
+    const stSub = on ? `${since ? 'up ' + fmtDur((Date.now() - since) / 1000) + ' · ' : ''}${plural(d.workers, 'worker')}` : d.unit ? (sv.UnitFileState === 'enabled' ? 'starts at boot' : 'not started at boot') : 'no systemd unit';
+    const errCls = err5 >= 5 ? 'crit-t' : err5 >= 1 ? 'warn-t' : '';
+    $('#ng-sum').innerHTML = [
+      ['Status', `<span class="${state[0]}">${state[1]}</span>`, stSub, ''],
+      ['Config', d.test.ok ? '<span class="ok-t">Valid</span>' : '<span class="crit-t">Broken</span>', `nginx ${esc(d.version || '?')}`, ''],
+      ['Sites', `${en}<span class="mute" style="font-size:16px"> / ${d.sites.length}</span>`, 'enabled', ''],
+      ['Requests', lastHour.toLocaleString(), 'in the last hour', ''],
+      ['Server errors', total ? err5.toFixed(err5 < 10 ? 1 : 0) + '%' : '—', total ? `5xx in the last ${total.toLocaleString()} requests` : 'no access log yet', errCls],
+    ].map(([l, v, s, c]) => `<div class="card"><div class="label">${l}</div><div class="big ${c}">${v}</div><div class="label">${s}</div></div>`).join('');
+    $('#ng-ctl').innerHTML = `<button data-c="test">${ic('check')}Test</button>` +
+      (on ? `<button data-c="reload">${ic('restart')}Reload</button><button data-c="restart">${ic('power')}Restart</button><button data-c="stop">${ic('stop')}Stop</button>`
+          : `<button data-c="start">${ic('play')}Start</button>`) +
+      (d.unit ? `<button data-c="${sv.UnitFileState === 'enabled' ? 'disable' : 'enable'}" title="Start nginx when the machine boots">${ic('rocket')}Boot: ${sv.UnitFileState === 'enabled' ? 'on' : 'off'}</button>` : '');
+    $('#ng-n').textContent = d.sites.length;
+    const body = $('#ng-b');
+    if (this.tab !== 'logs' && this.stopLog) { this.stopLog(); this.stopLog = null; }
+    if (this.tab === 'sites') this.renderSites(body, tabChanged);
+    else if (this.tab === 'traffic') this.renderTraffic(body);
+    else if (tabChanged || !$('[data-lv]', body)) this.renderLogs(body);
+  },
+  renderSites(body, fresh) {
+    const d = this.d;
+    if (fresh || !$('#ng-sq', body)) {
+      body.innerHTML = `<div class="toolbar" style="margin-top:0"><div class="search">${ic('search')}<input class="in" id="ng-sq" placeholder="Site, domain, upstream…  ( / )" value="${esc(this.q)}"></div>
+        <div class="r mute" style="font-size:12.5px">${d.layout === 'debian' ? 'sites-available → sites-enabled' : 'conf.d'} · <span class="mono">${esc(d.confDir)}</span></div></div><div id="ng-sl"></div>`;
+      $('#ng-sq', body).oninput = debounce(e => { this.q = e.target.value.toLowerCase(); this.renderSites(body); }, 120);
+    }
+    const q = this.q;
+    const list = d.sites.filter(s => !q || JSON.stringify([s.name, s.servers]).toLowerCase().includes(q));
+    $('#ng-sl', body).innerHTML = list.length ? `<div class="card flush"><div class="tbl-wrap"><table class="tbl"><thead><tr>
+        <th>Site</th><th>Domains</th><th class="hide-sm">Listens</th><th class="hide-sm">Sends to</th><th title="Enabled">On</th><th></th></tr></thead><tbody>
+      ${list.map(s => {
+        const names = [...new Set(s.servers.flatMap(v => v.names))];
+        const listen = [...new Set(s.servers.flatMap(v => v.listen.map(l => l.replace(/^\[::\]:/, '').replace(/^0\.0\.0\.0:/, ''))))];
+        const ssl = s.servers.some(v => v.ssl);
+        const link = ngxDomains(s)[0];
+        const targets = [...new Set(s.servers.map(ngxTarget).filter(Boolean))];
+        return `<tr class="click" data-sid="${esc(s.id)}">
+          <td><div class="row" style="gap:10px"><span class="dot ${s.enabled ? 'ok' : ''}"></span><div style="min-width:0"><div style="font-weight:600" class="trunc">${esc(ngxName(s))}${ssl ? ` <span class="badge ok">${ic('lock')}HTTPS</span>` : ''}</div><div class="sub mono trunc">${esc(s.id)}</div></div></div></td>
+          <td>${names.length ? names.slice(0, 3).map(n => n === '_' ? '<span class="chip" title="server_name _ — catch-all">any</span>' : `<span class="chip">${esc(n)}</span>`).join(' ') + (names.length > 3 ? ` <span class="mute">+${names.length - 3}</span>` : '') : '<span class="dim">—</span>'}</td>
+          <td class="hide-sm mono">${listen.length ? esc(listen.join(', ')) : '<span class="dim">—</span>'}</td>
+          <td class="hide-sm trunc" style="max-width:280px">${targets.join('<br>') || `<span class="dim">${s.servers.length ? '—' : 'no server block'}</span>`}</td>
+          <td><label class="switch" title="${s.enabled ? 'Enabled' : 'Disabled'}"><input type="checkbox" data-en="${esc(s.id)}" ${s.enabled ? 'checked' : ''}><i></i></label></td>
+          <td class="acts">${link && s.enabled ? `<a class="ib" href="${ssl ? 'https' : 'http'}://${esc(link)}" target="_blank" rel="noopener" title="Open ${esc(link)}">${ic('ext')}</a>` : ''}
+            <button class="ib" data-a="edit" title="Edit">${ic('edit')}</button><button class="ib" data-a="more" title="More">${ic('more')}</button></td></tr>`;
+      }).join('')}</tbody></table></div></div>`
+      : `<div class="card empty">${ic(q ? 'search' : 'globe')}<b>${q ? 'No sites match' : 'No sites yet'}</b>${q ? '' : '<span class="mute">Create one with <b>New site</b>.</span>'}</div>`;
+  },
+  renderTraffic(body) {
+    const st = this.d.stats, total = st.status.reduce((a, b) => a + b, 0);
+    if (!st.lines) {
+      body.innerHTML = `<div class="card empty">${ic('activity')}<b>No requests in the access log yet</b><span class="mute mono">${esc(st.file)}</span></div>`;
+      return;
+    }
+    const span = st.to - st.from;
+    const cls = [['2xx', 2, ''], ['3xx', 3, ''], ['4xx', 4, 'warn'], ['5xx', 5, 'crit']];
+    const top = rows => rows.length ? rows.map(r => `<div class="kv" style="margin-bottom:5px"><span class="mono" title="${esc(r.k)}" style="color:var(--text);overflow:hidden;text-overflow:ellipsis">${esc(r.k)}</span><span class="num">${r.n.toLocaleString()}</span></div>`).join('') : '<div class="mute">—</div>';
+    body.innerHTML = `
+      <div class="card" style="margin-bottom:16px"><div class="card-h"><h3>${ic('activity')} Requests per minute · last hour</h3><div class="r mute num" style="font-size:12px">peak ${Math.max(...st.perMin)}/min</div></div>
+        <canvas class="spark" id="ng-spark" style="height:90px"></canvas></div>
+      <div class="grid g3">
+        <div class="card"><div class="card-h"><h3>Status codes</h3></div>
+          ${cls.map(([l, i, c]) => { const p = total ? st.status[i] / total * 100 : 0; return `<div style="margin-bottom:10px"><div class="kv"><span>${l}</span><span class="num">${st.status[i].toLocaleString()} · ${p.toFixed(1)}%</span></div>${bar(p, c, 'thin')}</div>`; }).join('')}
+          <div class="mute" style="font-size:12px;margin-top:6px">Last ${st.lines.toLocaleString()} requests${span > 0 ? ` over ${fmtDur(span)}` : ''} · ${fmtB(st.bytes)} sent</div></div>
+        <div class="card"><div class="card-h"><h3>Top paths</h3></div>${top(st.paths)}</div>
+        <div class="card"><div class="card-h"><h3>Top clients</h3></div>${top(st.ips)}</div>
+      </div>
+      ${st.lastErr.length ? `<div class="card" style="margin-top:16px"><div class="card-h"><h3 class="crit-t">${ic('alert')} Recent errors</h3><div class="r"><button class="btn sm" data-a="errlog">${ic('list')}Error log</button></div></div><pre class="out">${esc(st.lastErr.join('\n'))}</pre></div>` : ''}`;
+    requestAnimationFrame(() => spark($('#ng-spark'), st.perMin, '--acc'));
+  },
+  renderLogs(body) {
+    this.stopLog && this.stopLog();
+    body.innerHTML = `<div class="btn-group" id="ng-lk" style="margin-bottom:10px"><button data-k="access" class="${this.logKind === 'access' ? 'on' : ''}">Access log</button><button data-k="error" class="${this.logKind === 'error' ? 'on' : ''}">Error log</button></div><div id="ng-lv"></div>`;
+    $('#ng-lk', body).onclick = e => { const b = e.target.closest('[data-k]'); if (b && b.dataset.k !== this.logKind) { this.logKind = b.dataset.k; this.renderLogs(body); } };
+    const kind = this.logKind;
+    const fmt = l => {
+      let c = '';
+      if (kind === 'error') c = /\[(emerg|alert|crit|error)\]/.test(l) ? 'p3' : /\[warn\]/.test(l) ? 'p4' : '';
+      else { const m = l.match(/" ([45])\d\d /); c = m ? (m[1] === '5' ? 'p3' : 'p4') : ''; }
+      return `<div class="ll ${c}"><span class="msg">${esc(l)}</span></div>`;
+    };
+    this.stopLog = logView($('#ng-lv', body), `/api/nginx/logs?kind=${kind}`, fmt, 'calc(100vh - 330px)');
+  },
+  click(e) {
+    const b = e.target.closest('[data-a]');
+    if (b && b.dataset.a === 'errlog') { this.logKind = 'error'; this.tab = 'logs'; this.syncTabs(); this.render(true); return; }
+    if (e.target.closest('.switch') || e.target.closest('a')) return;
+    const tr = e.target.closest('tr[data-sid]');
+    if (!tr || !this.d) return;
+    const s = this.d.sites.find(x => x.id === tr.dataset.sid);
+    if (!s) return;
+    if (b && b.dataset.a === 'more') { e.stopPropagation(); return this.siteMenu(s, b); }
+    ngxEdit(s.id, () => this.poll().catch(() => { }));
+  },
+  siteMenu(s, anchor) {
+    const domains = ngxDomains(s);
+    showMenu(anchor, [
+      { label: 'Edit config', icon: 'edit', fn: () => ngxEdit(s.id, () => this.poll().catch(() => { })) },
+      { label: s.enabled ? 'Disable' : 'Enable', icon: s.enabled ? 'stop' : 'play', fn: () => this.siteAction(s, s.enabled ? 'disable' : 'enable') },
+      this.d.certbot && domains.length && s.enabled ? { label: 'Get HTTPS certificate…', icon: 'lock', fn: () => this.certbot(domains) } : null,
+      { label: 'Duplicate as new site…', icon: 'copy', fn: () => api('/api/nginx/file?path=' + encodeURIComponent(s.id)).then(x => this.newSite(x.content), e => toast(e.message, 'crit')) },
+      '-',
+      s.enabled ? null : { label: 'Delete…', icon: 'trash', cls: 'crit', fn: () => this.siteAction(s, 'delete') },
+    ].filter(Boolean));
+  },
+  async siteAction(s, action) {
+    const name = ngxName(s);
+    if (action === 'delete' && !(await confirmBox(`Delete ${esc(name)}?`, `<span class="mono">${esc(s.id)}</span> is removed from disk. This can't be undone.`, { ok: 'Delete', danger: true, typed: name }))) return;
+    if (action === 'disable' && /^default/.test(s.name) && !(await confirmBox(`Disable ${esc(name)}?`, 'This is the default site. Requests that match no other site will be answered by whichever site nginx picks next — or not at all.', { ok: 'Disable' }))) return this.render();
+    const msg = { enable: `${name} enabled`, disable: `${name} disabled`, delete: `${name} deleted` }[action];
+    try { await post('/api/nginx/site', { action, id: s.id }); toast(msg, 'ok'); }
+    catch (e) { if (/config test/.test(e.message)) ngxTestFail(e.message); else toast(e.message, 'crit', 6000); }
+    this.poll().catch(() => { });
+  },
+  async ctl(c, btn) {
+    if (c === 'test') {
+      if (btn) btn.disabled = true;
+      try {
+        const r = await post('/api/nginx/ctl/test');
+        if (r.ok) toast('Config test passed', 'ok'); else ngxTestFail(r.out);
+      } catch (e) { toast(e.message, 'crit'); }
+      if (btn) btn.disabled = false;
+      return this.poll().catch(() => { });
+    }
+    if (c === 'stop' && !(await confirmBox('Stop nginx?', 'Every site it serves goes offline until you start it again.', { ok: 'Stop', danger: true }))) return;
+    if (c === 'restart' && !(await confirmBox('Restart nginx?', 'Open connections are dropped. <b>Reload</b> picks up config changes without dropping anyone.', { ok: 'Restart' }))) return;
+    const msg = { reload: 'Nginx reloaded', restart: 'Nginx restarted', start: 'Nginx started', stop: 'Nginx stopped', enable: 'Nginx will start at boot', disable: "Nginx won't start at boot" }[c];
+    if (btn) btn.disabled = true;
+    try { await post('/api/nginx/ctl/' + c); toast(msg, 'ok'); }
+    catch (e) { if (/config test/.test(e.message)) ngxTestFail(e.message); else toast(e.message, 'crit', 6000); }
+    if (btn) btn.disabled = false;
+    this.poll().catch(() => { });
+  },
+  newSite(prefill = '') {
+    const v = { type: 'proxy', domains: '', port: 80, upstream: '', root: '/var/www/', target: '' };
+    let dirty = !!prefill;
+    const body = `
+      <div class="btn-group" data-type style="margin-bottom:14px">${Object.entries(NGX_TPL).map(([k, t]) => `<button data-v="${k}" title="${t.d}">${t.l}</button>`).join('')}</div>
+      <div class="field-row"><div class="field"><label>Name</label><input class="in mono" name="name" placeholder="myapp" autocomplete="off"><div class="hint">Becomes the file name</div></div>
+        <div class="field"><label>Domains</label><input class="in mono" name="domains" placeholder="app.example.com www.app.example.com" autocomplete="off"><div class="hint">Space separated. Leave empty to match any.</div></div></div>
+      <div class="field-row" style="margin-top:12px"><div class="field"><label>Listen port</label><input class="in mono" name="port" type="number" min="1" max="65535" value="80"></div>
+        <div class="field" data-for="proxy"><label>App address</label><input class="in mono" name="upstream" placeholder="127.0.0.1:3000 or just 3000"></div>
+        <div class="field hide" data-for="static"><label>Folder</label><input class="in mono" name="root" value="/var/www/"></div>
+        <div class="field hide" data-for="redirect"><label>Redirect to</label><input class="in mono" name="target" placeholder="https://example.com"></div></div>
+      <div class="field" style="margin-top:14px"><label>Config <span class="mute" style="font-weight:400">— edit freely; nginx tests it before it's kept</span></label><textarea class="in mono" name="conf" rows="14" spellcheck="false" style="font-size:12.5px;white-space:pre;tab-size:4">${esc(prefill)}</textarea></div>
+      <label class="check" style="margin-top:12px"><span class="switch"><input type="checkbox" name="enable" checked><i></i></span>Enable and reload now</label>`;
+    modal({
+      title: prefill ? 'Duplicate site' : 'New site', body, ok: 'Create', wide: true,
+      onOpen: el => {
+        const ta = $('[name=conf]', el);
+        const sync = () => {
+          $$('[data-type] button', el).forEach(b => b.classList.toggle('on', b.dataset.v === v.type));
+          $$('[data-for]', el).forEach(f => f.classList.toggle('hide', f.dataset.for !== v.type));
+          if (!dirty) ta.value = ngxTemplate(v);
+        };
+        $('[data-type]', el).onclick = e => { const b = e.target.closest('[data-v]'); if (b) { v.type = b.dataset.v; sync(); } };
+        el.addEventListener('input', e => {
+          const n = e.target.name;
+          if (n === 'conf') { dirty = true; return; }
+          if (n in v) { v[n] = e.target.value; sync(); }
+        });
+        ngxTabKeys(ta);
+        sync();
+      },
+      onOk: async el => {
+        const name = $('[name=name]', el).value.trim();
+        if (!name) { toast('Give the site a name', 'warn'); return false; }
+        try {
+          await post('/api/nginx/site', { action: 'create', name, content: $('[name=conf]', el).value, enable: $('[name=enable]', el).checked });
+        } catch (e) {
+          if (/config test/.test(e.message)) { ngxTestFail(e.message); return false; }
+          throw e;
+        }
+        toast(`${name} created`, 'ok');
+        this.poll().catch(() => { });
+      },
+    });
+  },
+  certbot(domains) {
+    modal({
+      title: 'Get an HTTPS certificate',
+      body: `<p class="mute" style="margin-top:0">Certbot asks Let's Encrypt for a free certificate, adds it to this site and redirects HTTP to HTTPS. Each domain must point at this machine and be reachable on port 80 from the internet.</p>
+        <div class="field"><label>Domains</label>${domains.map(d => `<label class="check"><input type="checkbox" data-d="${esc(d)}" checked> <span class="mono">${esc(d)}</span></label>`).join('')}</div>
+        <div class="field" style="margin-top:12px"><label>Email for expiry notices <span class="mute" style="font-weight:400">(optional)</span></label><input class="in" name="email" type="email" placeholder="you@example.com"></div>`,
+      ok: 'Request certificate',
+      onOk: el => {
+        const ds = $$('[data-d]', el).filter(x => x.checked).map(x => x.dataset.d);
+        if (!ds.length) { toast('Pick at least one domain', 'warn'); return false; }
+        const email = $('[name=email]', el).value.trim();
+        setTimeout(async () => {
+          const o = drawer({ title: 'certbot', sub: esc(ds.join(', ')), body: '<pre class="out" style="max-height:none;min-height:60vh"></pre>' });
+          const pre = $('pre', o.body);
+          try {
+            await streamText('/api/nginx/certbot', { domains: ds, email }, t => { pre.textContent += t; pre.scrollTop = pre.scrollHeight; });
+            $('.drawer-h .sub', o.el).textContent = /✓ done\s*$/.test(pre.textContent) ? 'Finished' : 'Failed — see output';
+          } catch (err) { pre.textContent += '\n' + err.message; toast(err.message, 'crit'); }
+          this.poll().catch(() => { });
+        }, 0);
+      },
+    });
+  },
+};
+
+function ngxTestFail(msg) {
+  modal({
+    title: 'Nginx rejected that config', wide: true, ok: 'OK', cancel: '',
+    body: `<p class="mute" style="margin-top:0">Nothing was changed — the running nginx is untouched.</p><pre class="out">${esc(msg)}</pre>`,
+  });
+}
+
+// Tab inserts four spaces instead of leaving the textarea
+function ngxTabKeys(ta) {
+  ta.addEventListener('keydown', e => {
+    if (e.key !== 'Tab' || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
+    e.preventDefault();
+    ta.setRangeText('    ', ta.selectionStart, ta.selectionEnd, 'end');
+  });
+}
+
+async function ngxEdit(path, after = () => { }) {
+  const o = drawer({ title: 'loading…', body: '<div class="skel"></div><div class="skel"></div>' });
+  let f;
+  try { f = await api('/api/nginx/file?path=' + encodeURIComponent(path)); }
+  catch (e) { o.body.innerHTML = `<div class="empty">${ic('alert')}<b>${esc(e.message)}</b></div>`; return; }
+  let saved = f.content, mtime = f.mtime;
+  const fname = f.path.split('/').pop();
+  const h2 = $('.drawer-h h2', o.el);
+  h2.textContent = fname;
+  $('.drawer-h .sub', o.el).innerHTML = `<span class="mono">${esc(f.path)}</span>`;
+  o.body.innerHTML = `
+    <div class="row wrap" style="margin-bottom:10px;gap:8px">
+      <button class="btn pri" data-save>${ic('check')}Save &amp; reload</button>
+      <button class="btn" data-save-only title="Write the file without reloading nginx">Save only</button>
+      <button class="btn ghost" data-revert>Revert</button>
+      <span class="mute grow" data-st style="font-size:12.5px;text-align:right">Changes are tested with <span class="mono">nginx -t</span> and undone if they fail · <kbd>Ctrl S</kbd></span>
+    </div>
+    <textarea class="in mono" data-ta spellcheck="false" style="width:100%;height:calc(100vh - 210px);font-size:12.5px;line-height:1.55;white-space:pre;tab-size:4;resize:none"></textarea>
+    <pre class="out hide" data-err style="margin-top:10px;border-color:var(--crit)"></pre>`;
+  const ta = $('[data-ta]', o.body), st = $('[data-st]', o.body), errEl = $('[data-err]', o.body);
+  ta.value = f.content;
+  ngxTabKeys(ta);
+  const mark = () => { h2.innerHTML = esc(fname) + (ta.value !== saved ? ' <span class="badge warn">unsaved</span>' : ''); };
+  ta.addEventListener('input', mark);
+  const btns = () => $$('[data-save],[data-save-only]', o.body);
+  const save = async reload => {
+    btns().forEach(b => b.disabled = true);
+    st.innerHTML = '<span class="spin"></span> testing…';
+    errEl.classList.add('hide');
+    try {
+      const r = await post('/api/nginx/file', { path: f.path, content: ta.value, mtime, reload });
+      saved = ta.value; mtime = r.mtime; mark();
+      st.innerHTML = `<span class="ok-t">Saved${reload ? ' and reloaded' : ''}</span> · ${clock(Date.now())}`;
+      toast(`Saved ${fname}`, 'ok');
+      after();
+    } catch (e) {
+      st.innerHTML = '<span class="crit-t">Not saved</span>';
+      errEl.textContent = e.message; errEl.classList.remove('hide');
+    }
+    btns().forEach(b => b.disabled = false);
+  };
+  $('[data-save]', o.body).onclick = () => save(true);
+  $('[data-save-only]', o.body).onclick = () => save(false);
+  $('[data-revert]', o.body).onclick = () => { ta.value = saved; mark(); errEl.classList.add('hide'); };
+  ta.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); save(true); } });
+  setTimeout(() => ta.focus(), 30);
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  page: tailscale — every device on the tailnet, and a jump into any other iseall

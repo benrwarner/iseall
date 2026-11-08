@@ -39,6 +39,14 @@ func registerRoutes(mux *http.ServeMux, h *hub) {
 	a("GET /api/logs", handleJournal)
 	a("GET /api/schedule", handleSchedule)
 
+	a("GET /api/nginx", handleNginx)
+	a("POST /api/nginx/ctl/{action}", handleNginxCtl)
+	a("GET /api/nginx/file", handleNginxFileGet)
+	a("POST /api/nginx/file", handleNginxFileSave)
+	a("POST /api/nginx/site", handleNginxSite)
+	a("GET /api/nginx/logs", handleNginxLogs)
+	a("POST /api/nginx/certbot", handleNginxCertbot)
+
 	a("GET /api/boot", handleBoot)
 	a("POST /api/startup", handleStartupSave)
 	a("POST /api/startup/{name}/delete", handleStartupDelete)
